@@ -1,4 +1,6 @@
-#PS7 solution
+################  Q3  ################  
+
+#Taken from PS7 solution
 BSprice<-function(pc, S, k, vol, d, r, t)
 {
   #pc  put/call indicator call=1, put=-1
@@ -20,6 +22,10 @@ BSprice<-function(pc, S, k, vol, d, r, t)
 
 load(file = "fm408_exam_data.RData")
 
+#We add 3 columns to the given data:
+# - implied vols
+# - time to maturity (expressed in years)
+# - moneyness (ln(Strike/Forward))
 volvec<-vector()
 ttmvec<-vector()
 moneynessvec<-vector()
@@ -28,8 +34,12 @@ length(ttmvec) = nrow(raw)
 length(moneynessvec) = nrow(raw)
 
 for (i in 1:nrow(raw)) {
+  #Important: Discount Forward back (using interest rate and dividend yield) to get Spot (just using Forward does not work)
+  #Define f as the difference between the BS price with implied vol and the observed price
   f<-function (x) BSprice(1, raw$Forward[i]*exp(-(raw$InterestRate[i]-raw$DividendYield[i])*(raw$Term[i]/12)), raw$Strike[i], x, raw$DividendYield[i], raw$InterestRate[i], raw$Term[i]/12) - raw$CallPrice[i]
   
+  #Find the root of the function f (i.e. the implied vol that makes the BS price equal to the observed price)
+  #vol cannot be lower than 0 (lower boundary) - and is most likely not higher than 3 (arbitrarily chosen)
   voli<-uniroot(f, lower=0, upper=3)[[1]]
   ttm<-raw$Term[i]/12
   moneyness<-log(raw$Strike[i]/raw$Forward[i])
@@ -40,27 +50,29 @@ for (i in 1:nrow(raw)) {
   moneynessvec[i]<-moneyness
 }
 
+#Enrich given data with new columns
 raw["ImpliedVol"]<-volvec
 raw["TTM"]<-ttmvec
 raw["Moneyness"]<-moneynessvec
 
+#Plot implied vol surface (w/o inter/extrapolation) for a given date (here: 2006-01-31)
 #install.packages("plotly")
 library("plotly")
-
 plotdata <- raw[raw[1] == "2006-01-31", ]
-
 p<-plot_ly(plotdata, x=plotdata$TTM, y=plotdata$Moneyness, z=plotdata$ImpliedVol) %>%
            add_markers() %>%
            layout(scene = list(xaxis = list(title = 'Time to Maturity'),
                                yaxis = list(title = 'Moneyness [log(K/F)]'),
                                zaxis = list(title = 'Implied Volatility')))
-
 p
-
 Sys.setenv("plotly_username"="tneuber")
 Sys.setenv("plotly_api_key"="7CknaAatVziORktIj116")
 #chart_link = plotly_POST(p, filename="ImpliedVol")
 #chart_link
+
+
+################  Q4+6  ################  
+
 
 ## p: vector of svi parameters in the following order
 ##    (a, b, rho, m, sigma)
@@ -90,7 +102,6 @@ vfunc=function(p,k, maturity, v){
   if(p[5]<=0) return(1000) #p[5] = sigma
   if((a + b*p[5]*sqrt(1-rho^2)) < 0) return(1000)
   
-  
   # sum of squares
   res=sum((totalIV-maturity*((v)^2))^2)
   
@@ -109,28 +120,37 @@ l <- c(-20,0,-0.99,-20 ,1e-5)
 u <- c(20,50,0.99,5,20)
 
 
+
+#These vectors are used for Q9:
+# - meanvec is a vector of means of log excess returns that were calculated in Q6 
+# - varvec is a vector of annualised var of log ex returns (needed for Q9)
+# - termvec is a vector of time to maturities in months
 meanvec<-vector()
-#annualised
 varvec<-vector()
 termvec<-vector()
-#c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)
+
+#Looping over different times to maturities. Idea: calculate the SVI curve (Q4) + RN densities (Q6) for different maturities
+#In the current version: choose t fix (here: 2006-01-31)
 for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
   
-  #TODO: make selection variable baseds
+  #TODO: make selection variable based
+  #Tabe of options that are used to fit the SVI curve (i.e. all options that match a given t and T (but have different Strikes))
   optionsToFit<-raw[raw$ValuationDate == "2006-01-31", ]
   optionsToFit<-optionsToFit[optionsToFit$Term == term, ]
   
-  #TODO: no extrapolation?!
+  #TODO: fix this, integration should be from -Inf to +Inf 
   lIntegrBound <- optionsToFit$Moneyness[1]
   uIntegrBound <- optionsToFit$Moneyness[nrow(optionsToFit)]
   
-  #initialize negative
+  #TODO: Bug: the calculated var is sometimes negative. Repeat calcuation if that is the case until var is positive.
+  #Note: The SVI interpolation is non-deterministic because the optimization routine is random - results therefore vary
   var<--1
   
   while(var < 0) {
     func = function(p) {
       sum = 0
       for (i in 1:nrow(optionsToFit)) {
+        #Minimize the squared error (vfunc calculates squared error, sum gives the total squared error from all options used to calculate the SVI curve)
         sum =+ vfunc(p, optionsToFit$Moneyness[i], optionsToFit$TTM[i], optionsToFit$ImpliedVol[i])
       }
       return(sum)
@@ -140,6 +160,7 @@ for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
     outDEoptim <- DEoptim(func, l, u, DEoptim.control(VTR = 1e-4, itermax =  1e4))
     summary(outDEoptim)
     
+    #Like vfunc, but gives the implied vol according to the SVI curve instead of the squared error
     ## p: vector of svi parameters in the following order
     ##    (a, b, rho, m, sigma)
     ## k: log moneyness (log(K/F))
@@ -156,10 +177,12 @@ for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
       return(sqrt(totalIV/maturity))
     }
     
+    #The SVI curve. Note:k is the log moneyness, not the strike
     bestFit = function(k) {implVol(outDEoptim$optim$bestmem, k, optionsToFit$TTM[1])}
     
     curve(bestFit, from=-1, to=3, xlab="Moneyness [log(K/F)]", ylab="Implied Vol")
     
+    #Derive a function f two times at point x (using approximation formula, x is the delta used)
     secondDerivative = function(f, x, delta) {
       res = (f(x - delta) - 2*f(x) + f(x + delta)) / (delta^2)
       return (res)
@@ -168,6 +191,7 @@ for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
     #TODO: Check second argument (discounting?!)
     C = function(K) {BSprice(1, optionsToFit$Forward[1]*exp(-(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1])*optionsToFit$TTM[1]), K, bestFit(log(K/optionsToFit$Forward[1])), optionsToFit$DividendYield[1], optionsToFit$InterestRate[1], optionsToFit$TTM[1])}
     
+    #The implied density as a function of the strike. Note: Not the implied return density
     implDensity = function(K) {
       Dt = exp(-optionsToFit$TTM[1]*(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1]))
       secDeriv = secondDerivative(C, K, 0.5)
@@ -176,11 +200,18 @@ for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
     
     curve(implDensity, from=500, to=3000, xlab="K", ylab="Implied Density")
     
+    #TODO: Check this.
+    #use the implied density to get the implied log excess return density. 
+    #Problem: doing this leads to function that does not yield 1 when integrated form -Inf to Inf (implDensity does not do that either)
+    #Dirty trick: scale the resulting function so that the probabilities sum up to 1
+    #Problem 2: Integrating from -Inf to Inf leads to strange results because the function behaves strange from extrem values
+    #Even dirtier trick: only integrate from lIntegrBound to uIntegrBound. Chose this boundaries as the min/max of log moneyness we have data for (does that make sense?)
     returnImplDensityUnscaled = function(r) {return(implDensity(exp(r)*optionsToFit$Forward[1]))} 
     returnImplDensity = function(r) {return(returnImplDensityUnscaled(r)/integrate(returnImplDensityUnscaled, lower=lIntegrBound,upper=uIntegrBound)$value)}
     
     curve(returnImplDensity, from=-1, to=1, xlab="R", ylab="Implied Density")
     
+    #calculate the mean of the function by integration, and the var by using the usual formula
     mean<-integrate(function(x) {return(x*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value
     var<-(integrate(function(x) {return((x-mean)^2*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value)/(term/12)
   }
@@ -191,23 +222,40 @@ for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
   
 }
 
-varvec  
 
-integrate(returnImplDensityUnscaled, -3, 3)$value/integrate(returnImplDensityUnscaled, lower=-5,upper=Inf)$value
-integrate(returnImplDensity, -5, 5)$value
+####END#####
 
-implDensity(150)
+################  Q11  ################  
 
-BSprice(1, raw[[6]][option]*exp(-(raw[[4]][option]-raw[[5]][option])*(raw[[2]][option]/12)), raw$Strike[option], raw$ImpliedVol[option], raw$DividendYield[option], raw$InterestRate[option], raw$TTM[option])
+#downloading VIX
 
-secondDerivative(C, 2000, 0.10)
-curve(C, from=1900, to=2100, xlab="K", ylab="C")
-C(1670.3135)
-bestFit(1500)
-bestFit(2000)
-bestFit(2500)
-raw$Strike[option]
-C(raw$Strike[option])
-C(raw[[6]][option]*exp(-(raw[[4]][option]-raw[[5]][option])*(raw[[2]][option]/12)))
-bestFit(raw$Strike[option])
-bestFit(log(raw$Strike[option]/(raw[[6]][option]*exp(-(raw[[4]][option]-raw[[5]][option])*(raw[[2]][option]/12)))))
+install.packages('quantmod')
+library('quantmod')
+
+get(getSymbols("^VIX",src="yahoo",from="2006-01-31",to="2009-12-31"))
+VIX<-VIX[,4] #getting closing prices
+# to get the values of VIX for the 48 dates from raw_data, use this
+VIX<-as.numeric(VIX[which(as.character(index(VIX)) %in% t)]/100)
+# where t is the vector of the 48 dates
+
+
+################  Q15  ################  
+
+#% updated 15/03/2017
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% coefficients for Term 1  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+T2 = (kappa - rho*sigma1 + E^(kappa*(t - T))*(rho*sigma1 + kappa*(-1 + rho*sigma1*(-t + T))))/kappa^2
+
+T3 = -(((-1 + E^(kappa*(t - T)))*rho*sigma1 + kappa*(kappa - rho*sigma1)*(t - T))/kappa^2)
+
+T4 = (E^(kappa*T)*(eta - kappa)^2*(kappa - rho*sigma1) + E^(eta*t - eta*T + kappa*T)*kappa^2*(eta - kappa + rho*sigma1) + E^(kappa*t)*eta*(kappa*(-eta + kappa) + rho*sigma1*(eta + kappa^2*(t - T) + kappa*(-2 - eta*t + eta*T))))/(E^(kappa*T)*eta*(eta - kappa)^2*kappa)
+
+
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% (non-zero) coefficients for Term 2   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  
+Ttilde2 = (sigma1^2*(-E^(2*kappa*t) + E^(2*kappa*T) + 2*E^(kappa*(t + T))*kappa*(t - T)))/(2*E^(2*kappa*T)*kappa^3)
+
+Ttilde3 = -((3 - 4*E^(eta*(t - T)) + E^(2*eta*(t - T)))*kappa^6*sigma2^2 + eta*kappa^5*sigma2^2*(-1 + E^(2*eta*(t - T)) + 2*kappa*t - 2*kappa*T) + eta^6*sigma1^2*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) - eta^5*kappa*sigma1^2*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) - eta^4*kappa^2*(sigma1 - sigma2)*(sigma1 + sigma2)*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) - 2*eta^2*kappa^4*sigma2^2*(2 - 2*(E^(eta*(t - T)) + E^(kappa*(t - T)) - E^((eta + kappa)*(t - T))) + kappa*t - kappa*T) + eta^3*kappa^3*(sigma1^2*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) + sigma2^2*(-1 + E^(2*kappa*(t - T)) - 2*kappa*t + 2*kappa*T)))/(4*eta^3*(eta - kappa)^2*kappa^3*(eta + kappa))
+
+Ttilde4 = (E^(-2*eta*t - 3*kappa*t - 7*eta*T - 6*kappa*T)*(2*E^(3*eta*t + 4*kappa*t + 6*eta*T + 5*kappa*T)*eta^2*(eta - 2*kappa)*kappa^2*sigma2^2 - E^(4*eta*t + 3*kappa*t + 5*eta*T + 6*kappa*T)*(eta - 2*kappa)*kappa^4*sigma2^2 - E^(2*eta*t + 5*kappa*t + 7*eta*T + 4*kappa*T)*eta^3*((eta - kappa)^2*sigma1^2 - kappa^2*sigma2^2) + E^(2*eta*t + 3*kappa*t + 7*eta*T + 6*kappa*T)*(eta - 2*kappa)*(eta - kappa)^2*(eta^2*sigma1^2 + kappa^2*sigma2^2) + 2*E^(2*eta*t + 4*kappa*t + 7*eta*T + 5*kappa*T)*eta^2*(eta - 2*kappa)*kappa*(-(kappa*sigma2^2) + eta*sigma1^2*(1 + (eta - kappa)*(t - T))) - 2*E^(3*(eta + kappa)*(t + 2*T))*eta*kappa^2*(-(eta*kappa*sigma1^2) + sigma2^2*(eta^2 + 2*kappa^3*(t - T) + eta*kappa*(-2 + eta*t - eta*T) + kappa^2*(2 - 3*eta*t + 3*eta*T)))))/(2*eta^3*(eta - 2*kappa)*(eta - kappa)^2*kappa^2)
