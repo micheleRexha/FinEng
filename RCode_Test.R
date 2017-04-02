@@ -134,7 +134,7 @@ termvec<-vector()
 for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
   
   #TODO: make selection variable based
-  #Table of options that are used to fit the SVI curve (i.e. all options that match a given t and T (but have different Strikes))
+  #Tabe of options that are used to fit the SVI curve (i.e. all options that match a given t and T (but have different Strikes))
   optionsToFit<-raw[raw$ValuationDate == "2006-01-31", ]
   optionsToFit<-optionsToFit[optionsToFit$Term == term, ]
   
@@ -301,40 +301,7 @@ for(dates in t) {
     #The SVI curve. Note:k is the log moneyness, not the strike
     bestFit = function(k) {implVol(outDEoptim$optim$bestmem, k, optionsToFit$TTM[1])}
     
-    curve(bestFit, from=-1, to=3, xlab="Moneyness [log(K/F)]", ylab="Implied Vol")
-    
-    #Derive a function f two times at point x (using approximation formula, x is the delta used)
-    secondDerivative = function(f, x, delta) {
-      res = (f(x - delta) - 2*f(x) + f(x + delta)) / (delta^2)
-      return (res)
-    }
-    
-    #TODO: Check second argument (discounting?!)
-    C = function(K) {BSprice(1, optionsToFit$Forward[1]*exp(-(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1])*optionsToFit$TTM[1]), K, bestFit(log(K/optionsToFit$Forward[1])), optionsToFit$DividendYield[1], optionsToFit$InterestRate[1], optionsToFit$TTM[1])}
-    
-    #The implied density as a function of the strike. Note: Not the implied return density
-    implDensity = function(K) {
-      Dt = exp(-optionsToFit$TTM[1]*(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1]))
-      secDeriv = secondDerivative(C, K, 0.5)
-      return(secDeriv / Dt)
-    }
-    
-    curve(implDensity, from=500, to=3000, xlab="K", ylab="Implied Density")
-    
-    #TODO: Check this.
-    #use the implied density to get the implied log excess return density. 
-    #Problem: doing this leads to function that does not yield 1 when integrated form -Inf to Inf (implDensity does not do that either)
-    #Dirty trick: scale the resulting function so that the probabilities sum up to 1
-    #Problem 2: Integrating from -Inf to Inf leads to strange results because the function behaves strange from extrem values
-    #Even dirtier trick: only integrate from lIntegrBound to uIntegrBound. Chose this boundaries as the min/max of log moneyness we have data for (does that make sense?)
-    returnImplDensityUnscaled = function(r) {return(implDensity(exp(r)*optionsToFit$Forward[1]))} 
-    returnImplDensity = function(r) {return(returnImplDensityUnscaled(r)/integrate(returnImplDensityUnscaled, lower=lIntegrBound,upper=uIntegrBound)$value)}
-    
-    curve(returnImplDensity, from=-3, to=3, xlab="R", ylab="Implied Density")
-    
-    #calculate the mean of the function by integration, and the var by using the usual formula
-    mean<-integrate(function(x) {return(x*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value
-    var<-(integrate(function(x) {return((x-mean)^2*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value)
+    curve(bestFit, from=-10, to=10, xlab="Moneyness [log(K/F)]", ylab="Implied Vol")
   }
   
   meanTTM12vec<-c(meanTTM12vec, mean)
@@ -342,126 +309,17 @@ for(dates in t) {
 
 }
 
-library("reshape2")
 
-TTM12frame<-data.frame(t, VIX, meanTTM12vec, varTTM12vec)
-ggplot(TTM12frame, aes(t,y = value, color = variable)) + 
-  geom_point(aes(y = VIX, col = "VIX")) +
-  geom_point(aes(y = meanTTM12vec, col = "mean")) +
-  geom_point(aes(y = varTTM12vec, col = "var")) 
+varTTM12frame<-data.frame(t, varTTM12vec)
+p1<-ggplot(varTTM12frame, aes(t,varTTM12vec)) + geom_point() + geom_smooth()
+p1
 
 
-################  Q13  ################  
+VIXframe<-data.frame(t, VIX)
+p2<-ggplot(VIXframe, aes(t,VIX)) + geom_point() + geom_smooth()
+p2
 
-varmatrix<-matrix(nrow=48, ncol=0)
-
-#Looping over different dates 
-#Choose term fix as 12
-for(term in c(1, 3, 6, 12, 24, 36, 48, 60, 84, 120)) {
-  meanvec<-vector()
-  varvec<-vector()
-  for(date in t) {
-  
-    #Tabe of options that are used to fit the SVI curve (i.e. all options that match a given t and T (but have different Strikes))
-    optionsToFit<-raw[raw$ValuationDate == date, ]
-    optionsToFit<-optionsToFit[optionsToFit$Term == term, ]
-    
-    #TODO: fix this, integration should be from -Inf to +Inf 
-    #lIntegrBound <- optionsToFit$Moneyness[1]
-    #uIntegrBound <- optionsToFit$Moneyness[nrow(optionsToFit)]
-    lIntegrBound <- -3
-    uIntegrBound <- 3
-    
-    #TODO: Bug: the calculated var is sometimes negative. Repeat calcuation if that is the case until var is positive.
-    #Note: The SVI interpolation is non-deterministic because the optimization routine is random - results therefore vary
-    var<--1
-    
-    while(var < 0) {
-      func = function(p) {
-        sum = 0
-        for (i in 1:nrow(optionsToFit)) {
-          #Minimize the squared error (vfunc calculates squared error, sum gives the total squared error from all options used to calculate the SVI curve)
-          sum =+ vfunc(p, optionsToFit$Moneyness[i], optionsToFit$TTM[i], optionsToFit$ImpliedVol[i])
-        }
-        return(sum)
-      }
-      
-      #Then write the optimization function applied to vfunc
-      outDEoptim <- DEoptim(func, l, u, DEoptim.control(VTR = 1e-4, itermax =  1e4))
-      summary(outDEoptim)
-      
-      #Like vfunc, but gives the implied vol according to the SVI curve instead of the squared error
-      ## p: vector of svi parameters in the following order
-      ##    (a, b, rho, m, sigma)
-      ## k: log moneyness (log(K/F))
-      ## maturity: options' time to maturity in years
-      implVol = function(p, k, maturity) {
-        a=p[1]
-        b=p[2]
-        rho=p[3]
-        m=p[4]
-        sigma2=p[5]^2
-        
-        kk=(k-m)^2+sigma2
-        totalIV=a+b*(rho * (k-m)+sqrt(kk))
-        return(sqrt(totalIV/maturity))
-      }
-      
-      #The SVI curve. Note:k is the log moneyness, not the strike
-      bestFit = function(k) {implVol(outDEoptim$optim$bestmem, k, optionsToFit$TTM[1])}
-      
-      #curve(bestFit, from=-1, to=3, xlab="Moneyness [log(K/F)]", ylab="Implied Vol")
-      
-      #Derive a function f two times at point x (using approximation formula, x is the delta used)
-      secondDerivative = function(f, x, delta) {
-        res = (f(x - delta) - 2*f(x) + f(x + delta)) / (delta^2)
-        return (res)
-      }
-      
-      #TODO: Check second argument (discounting?!)
-      C = function(K) {BSprice(1, optionsToFit$Forward[1]*exp(-(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1])*optionsToFit$TTM[1]), K, bestFit(log(K/optionsToFit$Forward[1])), optionsToFit$DividendYield[1], optionsToFit$InterestRate[1], optionsToFit$TTM[1])}
-      
-      #The implied density as a function of the strike. Note: Not the implied return density
-      implDensity = function(K) {
-        Dt = exp(-optionsToFit$TTM[1]*(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1]))
-        secDeriv = secondDerivative(C, K, 0.5)
-        return(secDeriv / Dt)
-      }
-      
-      #curve(implDensity, from=500, to=3000, xlab="K", ylab="Implied Density")
-      
-      #TODO: Check this.
-      #use the implied density to get the implied log excess return density. 
-      #Problem: doing this leads to function that does not yield 1 when integrated form -Inf to Inf (implDensity does not do that either)
-      #Dirty trick: scale the resulting function so that the probabilities sum up to 1
-      #Problem 2: Integrating from -Inf to Inf leads to strange results because the function behaves strange from extrem values
-      #Even dirtier trick: only integrate from lIntegrBound to uIntegrBound. Chose this boundaries as the min/max of log moneyness we have data for (does that make sense?)
-      returnImplDensityUnscaled = function(r) {return(implDensity(exp(r)*optionsToFit$Forward[1]))} 
-      returnImplDensity = function(r) {return(returnImplDensityUnscaled(r)/integrate(returnImplDensityUnscaled, lower=lIntegrBound,upper=uIntegrBound)$value)}
-      
-      #curve(returnImplDensity, from=-3, to=3, xlab="R", ylab="Implied Density")
-      
-      #calculate the mean of the function by integration, and the var by using the usual formula
-      mean<-integrate(function(x) {return(x*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value
-      var<-(integrate(function(x) {return((x-mean)^2*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value)/(term/12)
-    }
-    
-    meanvec<-c(meanvec, mean)
-    varvec<-c(varvec, var)
-    
-  }
-  varmatrix<-cbind(varmatrix, varvec)
-}
-
-
-
-## here you will need to construct calculated variance from risk neutral density in the following format
-## column : time to maturity; row: valuationdate
-## if Q12 is the resulting matrix, to do the PCA, use
-pz <- prcomp(Q12, tol = 0.1,na.rm=T)
-summary(pz)
-
-
+multiplot(p1, p2)
 
 ################  Q15  ################  
 
