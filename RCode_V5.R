@@ -479,3 +479,79 @@ Ttilde2 = (sigma1^2*(-E^(2*kappa*t) + E^(2*kappa*T) + 2*E^(kappa*(t + T))*kappa*
 Ttilde3 = -((3 - 4*E^(eta*(t - T)) + E^(2*eta*(t - T)))*kappa^6*sigma2^2 + eta*kappa^5*sigma2^2*(-1 + E^(2*eta*(t - T)) + 2*kappa*t - 2*kappa*T) + eta^6*sigma1^2*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) - eta^5*kappa*sigma1^2*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) - eta^4*kappa^2*(sigma1 - sigma2)*(sigma1 + sigma2)*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) - 2*eta^2*kappa^4*sigma2^2*(2 - 2*(E^(eta*(t - T)) + E^(kappa*(t - T)) - E^((eta + kappa)*(t - T))) + kappa*t - kappa*T) + eta^3*kappa^3*(sigma1^2*(3 - 4*E^(kappa*(t - T)) + E^(2*kappa*(t - T)) + 2*kappa*t - 2*kappa*T) + sigma2^2*(-1 + E^(2*kappa*(t - T)) - 2*kappa*t + 2*kappa*T)))/(4*eta^3*(eta - kappa)^2*kappa^3*(eta + kappa))
 
 Ttilde4 = (E^(-2*eta*t - 3*kappa*t - 7*eta*T - 6*kappa*T)*(2*E^(3*eta*t + 4*kappa*t + 6*eta*T + 5*kappa*T)*eta^2*(eta - 2*kappa)*kappa^2*sigma2^2 - E^(4*eta*t + 3*kappa*t + 5*eta*T + 6*kappa*T)*(eta - 2*kappa)*kappa^4*sigma2^2 - E^(2*eta*t + 5*kappa*t + 7*eta*T + 4*kappa*T)*eta^3*((eta - kappa)^2*sigma1^2 - kappa^2*sigma2^2) + E^(2*eta*t + 3*kappa*t + 7*eta*T + 6*kappa*T)*(eta - 2*kappa)*(eta - kappa)^2*(eta^2*sigma1^2 + kappa^2*sigma2^2) + 2*E^(2*eta*t + 4*kappa*t + 7*eta*T + 5*kappa*T)*eta^2*(eta - 2*kappa)*kappa*(-(kappa*sigma2^2) + eta*sigma1^2*(1 + (eta - kappa)*(t - T))) - 2*E^(3*(eta + kappa)*(t + 2*T))*eta*kappa^2*(-(eta*kappa*sigma1^2) + sigma2^2*(eta^2 + 2*kappa^3*(t - T) + eta*kappa*(-2 + eta*t - eta*T) + kappa^2*(2 - 3*eta*t + 3*eta*T)))))/(2*eta^3*(eta - 2*kappa)*(eta - kappa)^2*kappa^2)
+
+
+calcImplDensity <- function(date, term) {
+  valid<-FALSE
+  var<--1
+  while(!isTRUE(valid) || var < 0) {
+    
+    #TODO: make selection variable based
+    #Table of options that are used to fit the SVI curve (i.e. all options that match a given t and T (but have different Strikes))
+    optionsToFit<-raw[raw$ValuationDate == date, ]
+    optionsToFit<-optionsToFit[optionsToFit$Term == term, ]
+    
+    #TODO: uIntegrBound = Inf does not work
+    lIntegrBound <- log(0.5/optionsToFit$Forward[1]) + 1
+    uIntegrBound <- -lIntegrBound 
+    
+    #TODO: Bug: the calculated var is sometimes negative. Repeat calcuation if that is the case until var is positive.
+    #Note: The SVI interpolation is non-deterministic because the optimization routine is random - results therefore vary
+    var<--1
+    
+    func = function(p) {
+      sum = 0
+      for (i in 1:nrow(optionsToFit)) {
+        #Minimize the squared error (vfunc calculates squared error, sum gives the total squared error from all options used to calculate the SVI curve)
+        sum =+ vfunc(p, optionsToFit$Moneyness[i], optionsToFit$TTM[i], optionsToFit$ImpliedVol[i])
+      }
+      return(sum)
+    }
+    
+    #Then write the optimization function applied to vfunc
+    outDEoptim <- DEoptim(func, l, u, DEoptim.control(VTR = 1e-4, itermax =  1e4))
+    summary(outDEoptim)
+    
+    #The SVI curve. Note:k is the log moneyness, not the strike
+    bestFit = function(k) {implVol(outDEoptim$optim$bestmem, k, optionsToFit$TTM[1])}
+    
+    #curve(bestFit, from=-1, to=3, xlab="Moneyness [log(K/F)]", ylab="Implied Vol")
+    
+    C = function(K) {BSprice(1, optionsToFit$Forward[1]*exp(-(optionsToFit$InterestRate[1] - optionsToFit$DividendYield[1])*optionsToFit$TTM[1]), K, bestFit(log(K/optionsToFit$Forward[1])), optionsToFit$DividendYield[1], optionsToFit$InterestRate[1], optionsToFit$TTM[1])}
+    
+    #The implied density as a function of the strike. Note: Not the implied return density
+    implDensity = function(K) {
+      Dt = exp(-optionsToFit$TTM[1]*(optionsToFit$InterestRate[1]))
+      secDeriv = secondDerivative(C, K, 0.5)
+      return(secDeriv / Dt)
+    }
+    #curve(implDensity, from=0.5, to=5000, xlab="K", ylab="Implied Density")
+    
+    integral = tryCatch(integrate(implDensity, lower = 0.5 + 1, upper = Inf), error = function(e) e)  
+    if(inherits(integral, "error")) next
+    if(integral$value - integral$abs.error - epsilon <= 1 && 1 <= integral$value + integral$abs.error + epsilon) {
+      valid<-TRUE
+      #TODO: Check this.
+      #use the implied density to get the implied log excess return density. 
+      #Problem: doing this leads to function that does not yield 1 when integrated form -Inf to Inf (implDensity does not do that either)
+      #Dirty trick: scale the resulting function so that the probabilities sum up to 1
+      #Problem 2: Integrating from -Inf to Inf leads to strange results because the function behaves strange from extrem values
+      #Even dirtier trick: only integrate from lIntegrBound to uIntegrBound. Chose this boundaries as the min/max of log moneyness we have data for (does that make sense?)
+      returnImplDensityUnscaled = function(r) {return(implDensity(exp(r)*optionsToFit$Forward[1]))} 
+      returnImplDensity = function(r) {return(returnImplDensityUnscaled(r)/integrate(returnImplDensityUnscaled, lower=lIntegrBound,upper=uIntegrBound)$value)}
+      
+      #curve(returnImplDensity, from=lIntegrBound, to=3, xlab="R", ylab="Implied Density")
+      curve(returnImplDensityUnscaled, from=lIntegrBound, to=10, xlab="R", ylab="Implied Density")
+      
+      
+      #calculate the mean of the function by integration, and the var by using the usual formula
+      mean<-integrate(function(x) {return(x*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value
+      var<-(integrate(function(x) {return((x-mean)^2*returnImplDensity(x))}, lIntegrBound, uIntegrBound)$value)/(term/12)
+    } else {
+      valid<-FALSE
+    }
+    
+  }
+  return(c(mean, var))
+}
+calcImplDensity("2006-01-31", 12)
